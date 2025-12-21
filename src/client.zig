@@ -19,7 +19,7 @@ pub const GrpcClient = struct {
         
         return GrpcClient{
             .allocator = allocator,
-            .transport = try transport.Transport.init(allocator, connection),
+            .transport = try transport.Transport.init(allocator, connection, false),
             .compression = compression.Compression.init(allocator),
             .auth = null,
         };
@@ -51,6 +51,7 @@ pub const GrpcClient = struct {
     }
 
     pub fn call(self: *GrpcClient, method: []const u8, request: []const u8, compression_alg: compression.Compression.Algorithm) ![]u8 {
+        _ = method;
         // Add auth token if available
         var headers = std.StringHashMap([]const u8).init(self.allocator);
         defer headers.deinit();

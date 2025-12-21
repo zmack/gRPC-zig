@@ -64,14 +64,20 @@ pub const Auth = struct {
             .iat = now,
         };
 
-        var token = std.ArrayList(u8).init(self.allocator);
-        defer token.deinit();
+        var token = std.ArrayList(u8){};
+        defer token.deinit(self.allocator);
 
-        // Simplified JWT creation
-        try std.json.stringify(header, .{}, token.writer());
-        try token.append('.');
-        try std.json.stringify(payload, .{}, token.writer());
+        // Simplified JWT creation - manually format JSON
+        const header_json = try std.fmt.allocPrint(self.allocator, "{{\"alg\":\"{s}\",\"typ\":\"{s}\"}}", .{ header.alg, header.typ });
+        defer self.allocator.free(header_json);
+        try token.appendSlice(self.allocator, header_json);
 
-        return token.toOwnedSlice();
+        try token.append(self.allocator, '.');
+
+        const payload_json = try std.fmt.allocPrint(self.allocator, "{{\"sub\":\"{s}\",\"exp\":{d},\"iat\":{d}}}", .{ payload.sub, payload.exp, payload.iat });
+        defer self.allocator.free(payload_json);
+        try token.appendSlice(self.allocator, payload_json);
+
+        return token.toOwnedSlice(self.allocator);
     }
 };

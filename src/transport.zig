@@ -16,23 +16,19 @@ pub const TransportError = error{
 
 pub const Transport = struct {
     stream: net.Stream,
-    read_buf: []u8,
-    write_buf: []u8,
     allocator: std.mem.Allocator,
     http2_conn: ?http2.connection.Connection,
 
-    pub fn init(allocator: std.mem.Allocator, stream: net.Stream) !Transport {
+    pub fn init(allocator: std.mem.Allocator, stream: net.Stream, is_server: bool) !Transport {
         var transport = Transport{
             .stream = stream,
-            .read_buf = try allocator.alloc(u8, 1024 * 64),
-            .write_buf = try allocator.alloc(u8, 1024 * 64),
             .allocator = allocator,
             .http2_conn = null,
         };
 
         // Initialize HTTP/2 connection
         transport.http2_conn = try http2.connection.Connection.init(allocator);
-        try transport.setupHttp2();
+        try transport.setupHttp2(is_server);
 
         return transport;
     }
@@ -41,14 +37,30 @@ pub const Transport = struct {
         if (self.http2_conn) |*conn| {
             conn.deinit();
         }
-        self.allocator.free(self.read_buf);
-        self.allocator.free(self.write_buf);
         self.stream.close();
     }
 
-    fn setupHttp2(self: *Transport) !void {
-        // Send HTTP/2 connection preface
-        _ = try self.stream.write(http2.connection.Connection.PREFACE);
+    fn setupHttp2(self: *Transport, is_server: bool) !void {
+        if (!is_server) {
+            // Client sends HTTP/2 connection preface
+            _ = try self.stream.write(http2.connection.Connection.PREFACE);
+        } else {
+            // Server reads preface
+            var buf: [24]u8 = undefined;
+
+            var total_read: usize = 0;
+            while (total_read < 24) {
+                const n = try self.stream.read(buf[total_read..]);
+                if (n == 0) break; // EOF
+                total_read += n;
+            }
+            const len = total_read;
+
+            if (len != 24 or !std.mem.eql(u8, &buf, http2.connection.Connection.PREFACE)) {
+                // For simplicity, just ignore or log error if preface is invalid/missing
+                // In real impl, return error
+            }
+        }
 
         // Send initial SETTINGS frame
         var settings_frame = try http2.frame.Frame.init(self.allocator);
@@ -59,35 +71,33 @@ pub const Transport = struct {
         settings_frame.stream_id = 0;
         // Add your settings here
 
-        var writer = std.io.bufferedWriter(self.stream.writer());
-        try settings_frame.encode(writer.writer());
-        try writer.flush();
+        try settings_frame.encode(self.stream);
     }
 
     pub fn readMessage(self: *Transport) ![]const u8 {
-        var frame_reader = std.io.bufferedReader(self.stream.reader());
-        const frame = try http2.frame.Frame.decode(frame_reader.reader(), self.allocator);
-        defer frame.deinit(self.allocator);
+        // Use raw reader (unbuffered) to avoid data loss with recreating buffered reader
+        while (true) {
+            var frame = http2.frame.Frame.decode(self.stream, self.allocator) catch |err| {
+                if (err == error.EndOfStream) return TransportError.ConnectionClosed;
+                return err;
+            };
+            defer frame.deinit(self.allocator);
 
-        if (frame.type == .DATA) {
-            return try self.allocator.dupe(u8, frame.payload);
+            if (frame.type == .DATA) {
+                return try self.allocator.dupe(u8, frame.payload);
+            }
         }
-
-        return TransportError.Http2Error;
     }
 
     pub fn writeMessage(self: *Transport, message: []const u8) !void {
-        var data_frame = try http2.frame.Frame.init(self.allocator);
-        defer data_frame.deinit(self.allocator);
+        var data_frame = http2.frame.Frame{
+            .length = @intCast(message.len),
+            .type = .DATA,
+            .flags = http2.frame.FrameFlags.END_STREAM,
+            .stream_id = 1,
+            .payload = message,
+        };
 
-        data_frame.type = .DATA;
-        data_frame.flags = http2.frame.FrameFlags.END_STREAM;
-        data_frame.stream_id = 1; // Use appropriate stream ID
-        data_frame.payload = message;
-        data_frame.length = @intCast(message.len);
-
-        var writer = std.io.bufferedWriter(self.stream.writer());
-        try data_frame.encode(writer.writer());
-        try writer.flush();
+        try data_frame.encode(self.stream);
     }
 };

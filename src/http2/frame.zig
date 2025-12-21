@@ -42,22 +42,72 @@ pub const Frame = struct {
     }
 
     pub fn encode(self: Frame, writer: anytype) !void {
-        try writer.writeIntBig(u24, self.length);
-        try writer.writeIntBig(u8, @intFromEnum(self.type));
-        try writer.writeIntBig(u8, self.flags);
-        try writer.writeIntBig(u32, self.stream_id);
-        try writer.writeAll(self.payload);
+        var buf: [9]u8 = undefined;
+        std.mem.writeInt(u24, buf[0..3], self.length, .big);
+        buf[3] = @intFromEnum(self.type);
+        buf[4] = self.flags;
+        std.mem.writeInt(u32, buf[5..9], self.stream_id, .big);
+        _ = try writer.write(&buf);
+        _ = try writer.write(self.payload);
     }
 
     pub fn decode(reader: anytype, allocator: std.mem.Allocator) !Frame {
         var frame = try Frame.init(allocator);
-        frame.length = try reader.readIntBig(u24);
-        frame.type = @enumFromInt(try reader.readIntBig(u8));
-        frame.flags = try reader.readIntBig(u8);
-        frame.stream_id = @intCast(try reader.readIntBig(u32));
         
-        frame.payload = try allocator.alloc(u8, frame.length);
-        _ = try reader.readAll(frame.payload);
+        var buf3: [3]u8 = undefined;
+        {
+            var index: usize = 0;
+            while (index < 3) {
+                const n = try reader.read(buf3[index..]);
+                if (n == 0) return error.EndOfStream;
+                index += n;
+            }
+        }
+        frame.length = std.mem.readInt(u24, &buf3, .big);
+
+        var buf1: [1]u8 = undefined;
+        {
+            var index: usize = 0;
+            while (index < 1) {
+                const n = try reader.read(buf1[index..]);
+                if (n == 0) return error.EndOfStream;
+                index += n;
+            }
+        }
+        frame.type = @enumFromInt(buf1[0]);
+
+        {
+            var index: usize = 0;
+            while (index < 1) {
+                const n = try reader.read(buf1[index..]);
+                if (n == 0) return error.EndOfStream;
+                index += n;
+            }
+        }
+        frame.flags = buf1[0];
+
+        var buf4: [4]u8 = undefined;
+        {
+            var index: usize = 0;
+            while (index < 4) {
+                const n = try reader.read(buf4[index..]);
+                if (n == 0) return error.EndOfStream;
+                index += n;
+            }
+        }
+        const sid = std.mem.readInt(u32, &buf4, .big);
+        frame.stream_id = @intCast(sid & 0x7FFFFFFF);
+        
+        const payload = try allocator.alloc(u8, frame.length);
+        {
+            var index: usize = 0;
+            while (index < frame.length) {
+                const n = try reader.read(payload[index..]);
+                if (n == 0) return error.EndOfStream;
+                index += n;
+            }
+        }
+        frame.payload = payload;
         
         return frame;
     }
