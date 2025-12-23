@@ -19,6 +19,11 @@ pub const HealthCheck = struct {
     }
 
     pub fn deinit(self: *HealthCheck) void {
+        // Free all service name keys
+        var it = self.status.keyIterator();
+        while (it.next()) |key| {
+            self.allocator.free(key.*);
+        }
         self.status.deinit();
     }
 

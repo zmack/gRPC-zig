@@ -68,7 +68,8 @@ pub const GrpcClient = struct {
 
         try self.transport.writeMessage(compressed);
         const response_bytes = try self.transport.readMessage();
-        
+        defer self.allocator.free(response_bytes);
+
         // Decompress response
         return self.compression.decompress(response_bytes, compression_alg);
     }
